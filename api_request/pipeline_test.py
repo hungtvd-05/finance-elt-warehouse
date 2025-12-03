@@ -311,7 +311,7 @@ def populate_dim_stock(connection_pool, tickers):
         if conn:
             connection_pool.putconn(conn)
 
-def load_raw_historical_stock_prices(connection_pool, start_date='1990-01-01', retries=3):
+def _load_raw_historical_stock_prices(connection_pool, start_date='1990-01-01', retries=3):
     conn = None
     try:
         conn = connection_pool.getconn()
@@ -367,7 +367,7 @@ def load_raw_historical_stock_prices(connection_pool, start_date='1990-01-01', r
             if conn_worker:
                 connection_pool.putconn(conn_worker)
 
-def load_raw_historical_market_indicators(connection_pool, start_date='1990-01-01', retries=3):
+def _load_raw_historical_market_indicators(connection_pool, start_date='1990-01-01', retries=3):
     stock_keys = ['^VIX', '^TNX', "CL=F", "DX-Y.NYB"]
 
     insert_query = """
@@ -411,7 +411,7 @@ def load_raw_historical_market_indicators(connection_pool, start_date='1990-01-0
             if conn_worker:
                 connection_pool.putconn(conn_worker)
 
-def transform_historical_market_indicators(connection_pool):
+def _transform_historical_market_indicators(connection_pool, update=True):
     conn = None
     try:
         conn = connection_pool.getconn()
@@ -420,8 +420,21 @@ def transform_historical_market_indicators(connection_pool):
                               FROM dev.DimDate;""")
             date_map = {fulldate: datekey for fulldate, datekey in cursor.fetchall()}
 
-            cursor.execute("""SELECT RawDate, Ticker, Close FROM staging.RawMarketIndicators WHERE Ticker IN ('^VIX', '^TNX', 'CL=F', 'DX-Y.NYB');""")
+            if not update:
+                cursor.execute("""SELECT RawDate, Ticker, Close FROM staging.RawMarketIndicators WHERE Ticker IN ('^VIX', '^TNX', 'CL=F', 'DX-Y.NYB');""")
+            else:
+                query_limit_date = (datetime.date.today() - datetime.timedelta(days=365)).isoformat()
+                cursor.execute("""
+                               SELECT RawDate, Ticker, Close
+                               FROM staging.RawMarketIndicators
+                               WHERE Ticker IN ('^VIX', '^TNX', 'CL=F', 'DX-Y.NYB')
+                                 AND RawDate >= %s
+                               ORDER BY RawDate ASC;
+                               """, (query_limit_date,))
             raw_data = cursor.fetchall()
+
+        if not raw_data:
+            return
 
         df_raw = pd.DataFrame(raw_data, columns=['date', 'ticker', 'close'])
 
@@ -486,7 +499,7 @@ def transform_historical_market_indicators(connection_pool):
             connection_pool.putconn(conn)
 
 
-def transform_historical_stock_prices(connection_pool):
+def _transform_historical_stock_prices(connection_pool, update=True):
     print("Starting transformation pipeline...")
     conn = None
     try:
@@ -496,8 +509,20 @@ def transform_historical_stock_prices(connection_pool):
                               FROM dev.DimStock;""")
             stock_keys = cursor.fetchall()
 
-            cursor.execute("""SELECT DateKey, VIX_Close, TNX_Close, Oil_Close, USD_Close, Oil_Change, USD_Change, VIX_Change, TNX_Change
-                              FROM dev.FactMarketIndicators;""")
+            if not update:
+                cursor.execute("""SELECT DateKey, VIX_Close, TNX_Close, Oil_Close, USD_Close, Oil_Change, USD_Change, VIX_Change, TNX_Change
+                                  FROM dev.FactMarketIndicators;""")
+            else:
+                limit_date_obj = datetime.date.today() - datetime.timedelta(days=365)
+                limit_date_key = int(limit_date_obj.strftime('%Y%m%d'))  # Kết quả: 20231204
+
+                cursor.execute("""
+                               SELECT DateKey, VIX_Close, TNX_Close, Oil_Close, USD_Close, 
+                                      Oil_Change, USD_Change, VIX_Change, TNX_Change
+                               FROM dev.FactMarketIndicators
+                               WHERE DateKey >= %s
+                               ORDER BY DateKey ASC;
+                               """, (limit_date_key,))
             market_data = cursor.fetchall()
 
             cursor.execute("""SELECT FullDate, DateKey
@@ -512,8 +537,6 @@ def transform_historical_stock_prices(connection_pool):
 
         df_market = df_market.sort_values('DateKey')
 
-        # df_market.fillna(0, inplace=True)
-
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = []
             for stock_key, ticker, sector in stock_keys:
@@ -524,7 +547,8 @@ def transform_historical_stock_prices(connection_pool):
                     ticker,
                     sector,
                     df_market,
-                    date_map
+                    date_map,
+                    update
                 )
                 futures.append(f)
 
@@ -534,6 +558,22 @@ def transform_historical_stock_prices(connection_pool):
     except Exception as e:
         print(f"Error transforming historical stock prices: {e}")
         raise
+
+
+def load_daily_data(connection_pool, lookback_days=7):
+    print(f"--- Starting Daily Data Update (Lookback: {lookback_days} days) ---")
+
+    today = datetime.date.today()
+    start_date = (today - datetime.timedelta(days=lookback_days)).isoformat()
+
+    _load_raw_historical_market_indicators(connection_pool, start_date)
+
+    _load_raw_historical_stock_prices(connection_pool, start_date)
+
+    _transform_historical_market_indicators(connection_pool, update=True)
+
+    _transform_historical_stock_prices(connection_pool, update=True)
+
 
 connection_pool = etl.connect_to_db()
 initialize_database_schema(connection_pool)
@@ -548,4 +588,5 @@ initialize_database_schema(connection_pool)
 # transform_historical_market_indicators(connection_pool)
 # transform_historical_stock_prices(connection_pool)
 
-etl.train_one_stock_model(connection_pool, 126, 'NDSN')
+load_daily_data(connection_pool)
+# etl.train_one_stock_model(connection_pool, 126, 'NDSN')

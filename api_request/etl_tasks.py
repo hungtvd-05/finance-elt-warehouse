@@ -158,14 +158,23 @@ def process_one_stock_fundamentals(connection_pool, stock_key, ticker, date_key)
         if conn:
             connection_pool.putconn(conn)
 
-def process_one_stock_transformation(connection_pool, stock_key, ticker, sector, df_market, date_map):
+def process_one_stock_transformation(connection_pool, stock_key, ticker, sector, df_market, date_map, update=True):
     conn = None
     try:
         conn = connection_pool.getconn()
         with conn.cursor() as cursor:
-            cursor.execute("""SELECT RawDate, Ticker, Open, High, Low, Close, Volume
-                              FROM staging.RawStockPrice
-                              WHERE Ticker = %s""", (ticker,))
+            if not update:
+                cursor.execute("""SELECT RawDate, Ticker, Open, High, Low, Close, Volume
+                                  FROM staging.RawStockPrice
+                                  WHERE Ticker = %s""", (ticker,))
+            else:
+                query_limit_date = (datetime.date.today() - datetime.timedelta(days=365)).isoformat()
+
+                cursor.execute("""SELECT RawDate, Ticker, Open, High, Low, Close, Volume
+                                  FROM staging.RawStockPrice
+                                  WHERE Ticker = %s
+                                    AND RawDate >= %s
+                                  ORDER BY RawDate ASC""", (ticker, query_limit_date))
             raw_stock_data = cursor.fetchall()
 
             if not raw_stock_data:
