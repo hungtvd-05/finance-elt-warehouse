@@ -71,11 +71,12 @@ def build_hybrid_model(input_timesteps, input_features, output_horizon):
 
 def train_model(model, X_encoder_train, X_decoder_train, y_train,
                 X_encoder_test, X_decoder_test, y_test,
+                model_save_path='best_model.keras',
                 epochs=100, batch_size=32):
 
     callbacks = [
         EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True, verbose=1),
-        ModelCheckpoint('best_model.keras', monitor='val_loss', save_best_only=True, verbose=1),
+        ModelCheckpoint(model_save_path, monitor='val_loss', save_best_only=True, verbose=1),
         ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7, verbose=1)
     ]
 

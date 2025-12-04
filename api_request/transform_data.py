@@ -26,24 +26,15 @@ def add_technical_indicators(df_stock, sector, df_market, date_map):
 
     data['Volume_MA7'] = data['volume'].rolling(window=7).mean()
 
-    if sector in ['Energy', 'Industrials', 'Basic Materials']:
-        data['Volatility'] = data['Returns'].rolling(window=21).std()
+    data['Volatility'] = data['Returns'].rolling(window=21).std()
+
+    if sector in ['Energy', 'Industrials', 'Basic Materials', 'Consumer Cyclical', 'Consumer Defensive']:
 
         data['Stock_Oil_Corr'] = data['Returns'].rolling(window=21).corr(data['Oil_Change'])
         data['Vol_x_Oil'] = data['volume'] * data['Oil_Change']
 
-    elif sector in ['Technology', 'Communication Services', 'Consumer Cyclical']:
-        data['Volatility'] = data['Returns'].rolling(window=21).std()
-        data['EMA_20'] = data['close'].ewm(span=20, adjust=False).mean()
-
-    elif sector in ['Financial Services', 'Real Estate']:
+    elif sector in  ['Financial Services', 'Communication Services', 'Utilities', 'Healthcare']:
         data['Stock_Rate_Corr'] = data['Returns'].rolling(window=21).corr(data['TNX_Change'])
-
-    elif sector in ['Healthcare', 'Utilities', 'Consumer Defensive']:
-        ma20 = data['close'].rolling(window=20).mean()
-        std20 = data['close'].rolling(window=20).std()
-        data['BB_Width'] = ((ma20 + (std20 * 2)) - (ma20 - (std20 * 2))) / ma20
-        data['SMA_50'] = data['close'].rolling(window=50).mean()
 
     cols_to_drop = [
         'VIX_Close', 'TNX_Close', 'Oil_Close', 'USD_Close',
@@ -54,7 +45,7 @@ def add_technical_indicators(df_stock, sector, df_market, date_map):
     data = data.dropna()
     return data
 
-def prepare_sequences(data, config, train_split=0.85):
+def prepare_sequences(data, config, train_split=0.9):
 
     active_features, input_timesteps, output_horizon = config
 
@@ -64,8 +55,6 @@ def prepare_sequences(data, config, train_split=0.85):
 
     data_train = data[feature_columns].copy()
     data_train.dropna(inplace=True)
-
-    data_train.to_csv('debug_data_train.csv', index=False)
 
     features = data_train[feature_columns].values
     target = data_train['close'].values

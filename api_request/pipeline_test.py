@@ -81,9 +81,10 @@ def initialize_database_schema(connection_pool):
                     Volume BIGINT,
                     
                     Returns FLOAT,
+                    Volatility FLOAT,
+                    Volume_MA7 FLOAT,
                     RSI FLOAT,
                     MACD FLOAT,
-                    Volume_MA7 FLOAT,
 
                     TechnicalFeatures JSONB,
 
@@ -231,21 +232,13 @@ def populate_dim_stock(connection_pool, tickers):
             safe_cast_to_float(row['beta'])
         )
 
-        if row['Sector'] in ['Energy', 'Industrials', 'Basic Materials']:
+        if row['Sector'] in ['Energy', 'Industrials', 'Basic Materials', 'Consumer Cyclical', 'Consumer Defensive']:
             dim_stock_model_config[row['TickerSymbol']] = (
-                ['Returns', 'RSI', 'MACD', 'Volume_MA7', 'Volatility', 'Oil_Change', 'Stock_Oil_Corr', 'USD_Change', 'Vol_x_Oil', 'VIX_Change'], 60, 14
+                ['Returns', 'Volatility', 'Volume_MA7', 'RSI', 'MACD', 'Oil_Change', 'Stock_Oil_Corr', 'Vol_x_Oil', 'USD_Change', 'VIX_Change'], 60, 14
             )
-        elif row['Sector'] in ['Technology', 'Communication Services', 'Consumer Cyclical']:
+        elif row['Sector'] in ['Financial Services', 'Communication Services', 'Utilities', 'Healthcare']:
             dim_stock_model_config[row['TickerSymbol']] = (
-                ['Returns', 'RSI', 'MACD', 'Volume_MA7', 'Volatility', 'VIX_Change', 'TNX_Change', 'EMA_20'], 60, 14
-            )
-        elif row['Sector'] in ['Financial Services', 'Real Estate']:
-            dim_stock_model_config[row['TickerSymbol']] = (
-                ['Returns', 'RSI', 'MACD', 'Volume_MA7', 'TNX_Change', 'Stock_Rate_Corr', 'USD_Change'], 60, 14
-            )
-        elif row['Sector'] in ['Healthcare', 'Utilities', 'Consumer Defensive']:
-            dim_stock_model_config[row['TickerSymbol']] = (
-                ['Returns', 'RSI', 'MACD', 'Volume_MA7', 'BB_Width', 'SMA_50'], 60, 14
+                ['Returns', 'Volatility', 'Volume_MA7', 'RSI', 'MACD', 'Stock_Rate_Corr', 'USD_Change', 'VIX_Change',  'TNX_Change'], 60, 14
             )
 
     conn = None
@@ -575,18 +568,44 @@ def load_daily_data(connection_pool, lookback_days=7):
     _transform_historical_stock_prices(connection_pool, update=True)
 
 
+def train_all_stocks(connection_pool):
+    conn = None
+    try:
+        conn = connection_pool.getconn()
+        with conn.cursor() as cursor:
+            cursor.execute("""SELECT StockKey, TickerSymbol FROM dev.DimStock;""")
+            stock_list = cursor.fetchall()
+    except Exception as e:
+        print(f"Error fetching stock list for training: {e}")
+        raise
+    finally:
+        if conn:
+            connection_pool.putconn(conn)
+
+    total_stocks = len(stock_list)
+    print(f"Found {total_stocks} stocks to train.")
+
+    for i, (stock_key, ticker) in enumerate(stock_list):
+        print(f"\n[{i + 1}/{total_stocks}] Processing {ticker}...")
+
+        etl.train_one_stock_model(connection_pool, stock_key, ticker)
+
+        import tensorflow.keras.backend as K
+        K.clear_session()
+
 connection_pool = etl.connect_to_db()
 initialize_database_schema(connection_pool)
 # populate_dim_date(connection_pool, start_date_str='1990-01-01')
 # tickers = ar.get_all_tickers()
-# load_raw_historical_stock_prices(connection_pool)
-# load_raw_historical_market_indicators(connection_pool)
+# _load_raw_historical_stock_prices(connection_pool)
+# _load_raw_historical_market_indicators(connection_pool)
 # populate_dim_stock(connection_pool, tickers)
 
 # load_raw_historical_market_indicators(connection_pool, start_date='1990-01-01')
 
-# transform_historical_market_indicators(connection_pool)
-# transform_historical_stock_prices(connection_pool)
+# _transform_historical_market_indicators(connection_pool, update=False)
+# _transform_historical_stock_prices(connection_pool, update=False)
 
-load_daily_data(connection_pool)
+# load_daily_data(connection_pool)
 # etl.train_one_stock_model(connection_pool, 126, 'NDSN')
+train_all_stocks(connection_pool)

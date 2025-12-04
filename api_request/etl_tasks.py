@@ -1,4 +1,6 @@
 import json
+import os
+
 # import matplotlib.pyplot as plt
 
 import pandas as pd
@@ -188,7 +190,7 @@ def process_one_stock_transformation(connection_pool, stock_key, ticker, sector,
             if stock_trans.empty:
                 return
 
-            core_db_columns = {'DateKey', 'open', 'high', 'low', 'close', 'volume', 'Returns', 'RSI', 'MACD', 'Volume_MA7'}
+            core_db_columns = {'DateKey', 'open', 'high', 'low', 'close', 'volume', 'Returns', 'Volatility', 'Volume_MA7', 'RSI', 'MACD'}
 
             records_to_insert = []
 
@@ -215,9 +217,10 @@ def process_one_stock_transformation(connection_pool, stock_key, ticker, sector,
                     getattr(row, 'close'),
                     getattr(row, 'volume'),
                     getattr(row, 'Returns'),
+                    getattr(row, 'Volatility'),
+                    getattr(row, 'Volume_MA7'),
                     getattr(row, 'RSI'),
                     getattr(row, 'MACD'),
-                    getattr(row, 'Volume_MA7'),
                     technical_features_json
                 ))
 
@@ -226,9 +229,9 @@ def process_one_stock_transformation(connection_pool, stock_key, ticker, sector,
                 return
 
             insert_query = """
-                           INSERT INTO dev.FactStockPrice (DateKey, StockKey, Open, High, Low, Close, Volume, Returns, RSI, MACD, Volume_MA7,
+                           INSERT INTO dev.FactStockPrice (DateKey, StockKey, Open, High, Low, Close, Volume, Returns, Volatility, Volume_MA7, RSI, MACD, 
                                                            TechnicalFeatures)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (DateKey, StockKey) DO \
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (DateKey, StockKey) DO \
                            UPDATE SET \
                                Open = EXCLUDED.Open, \
                                High = EXCLUDED.High, \
@@ -236,9 +239,10 @@ def process_one_stock_transformation(connection_pool, stock_key, ticker, sector,
                                Close = EXCLUDED.Close, \
                                Volume = EXCLUDED.Volume, \
                                 Returns = EXCLUDED.Returns, \
+                                Volatility = EXCLUDED.Volatility, \
+                                Volume_MA7 = EXCLUDED.Volume_MA7, \
                                 RSI = EXCLUDED.RSI, \
                                 MACD = EXCLUDED.MACD, \
-                                Volume_MA7 = EXCLUDED.Volume_MA7, \
                                TechnicalFeatures = EXCLUDED.TechnicalFeatures; \
                            """
             cursor.executemany(insert_query, records_to_insert)
@@ -275,13 +279,17 @@ def train_one_stock_model(connection_pool, stock_key, ticker):
             df_market['datekey'] = df_market['datekey'].astype(int)
 
         query = """
-                SELECT DateKey, Open, High, Low, Close, Volume, Returns, RSI, MACD, Volume_MA7, TechnicalFeatures
+                SELECT DateKey, Open, High, Low, Close, Volume, Returns, Volatility, Volume_MA7, RSI, MACD, TechnicalFeatures
                 FROM dev.FactStockPrice
                 WHERE StockKey = %s
                 ORDER BY DateKey ASC
                 """
 
         df = pd.read_sql(query, conn, params=(stock_key,))
+
+        if df.empty:
+            print(f"No stock price data found for ticker {ticker}")
+            return
 
         features_df = pd.json_normalize(df['technicalfeatures'])
 
@@ -296,9 +304,16 @@ def train_one_stock_model(connection_pool, stock_key, ticker):
          scaler_X, scaler_y) = td.prepare_sequences(df_merged, config)
 
         model = build_hybrid_model(len(X_encoder_train[0]), X_encoder_train.shape[2], config[2])
+
+        save_dir = "saved_models"
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+
+        model_filename = f"{save_dir}/{ticker}_model.keras"
+
         history = train_model(model, X_encoder_train, X_decoder_train, y_train,
-                                 X_encoder_test, X_decoder_test, y_test,
-                                 epochs=100, batch_size=64)
+                                 X_encoder_test, X_decoder_test, y_test, model_save_path=model_filename,
+                                 epochs=100, batch_size=32)
 
         predictions = evaluate_model(model, X_encoder_test, X_decoder_test, y_test, scaler_y)
 
