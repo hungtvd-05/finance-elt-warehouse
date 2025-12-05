@@ -136,12 +136,32 @@ def initialize_database_schema(connection_pool):
                         REFERENCES dev.DimStock(StockKey) 
                         ON DELETE CASCADE
                 );
+                
+                CREATE TABLE IF NOT EXISTS dev.FactStockPrediction (                    
+                    PredictionDateKey INT NOT NULL, 
+                    StockKey INT NOT NULL,
+                    
+                    ForecastPrices DECIMAL[] NOT NULL, 
+                    
+                    CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
+                    CONSTRAINT fk_prediction_stock 
+                        FOREIGN KEY (StockKey) 
+                        REFERENCES dev.DimStock(StockKey),
+                        
+                    CONSTRAINT fk_prediction_date 
+                        FOREIGN KEY (PredictionDateKey) 
+                        REFERENCES dev.DimDate(DateKey),
+                
+                    CONSTRAINT pk_fact_prediction PRIMARY KEY (PredictionDateKey, StockKey)
+                );
 
                 SELECT create_hypertable('staging.RawMarketIndicators', 'rawdate', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
                 SELECT create_hypertable('staging.RawStockPrice', 'rawdate', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 
                 SELECT create_hypertable('dev.FactMarketIndicators', 'datekey', if_not_exists => TRUE, chunk_time_interval => 10000);
                 SELECT create_hypertable('dev.FactStockPrice', 'datekey', if_not_exists => TRUE, chunk_time_interval => 10000);
+                SELECT create_hypertable('dev.FactStockPrediction', 'predictiondatekey', if_not_exists => TRUE, chunk_time_interval => 10000);
                 """
     try:
         conn = connection_pool.getconn()
@@ -553,6 +573,77 @@ def _transform_historical_stock_prices(connection_pool, update=True):
         raise
 
 
+def train_all_stocks(connection_pool):
+    conn = None
+    try:
+        conn = connection_pool.getconn()
+        with conn.cursor() as cursor:
+            cursor.execute("""SELECT StockKey, TickerSymbol FROM dev.DimStock;""")
+            stock_list = cursor.fetchall()
+
+            cursor.execute("""SELECT DateKey, Oil_Change, USD_Change, VIX_Change, TNX_Change
+                              FROM dev.FactMarketIndicators
+                              ORDER BY DateKey ASC""")
+            market_data = cursor.fetchall()
+            market_columns = ['datekey', 'oil_change', 'usd_change', 'vix_change', 'tnx_change']
+            df_market = pd.DataFrame(market_data, columns=market_columns)
+
+            df_market['datekey'] = df_market['datekey'].astype(int)
+
+    except Exception as e:
+        print(f"Error fetching stock list for training: {e}")
+        raise
+    finally:
+        if conn:
+            connection_pool.putconn(conn)
+
+    total_stocks = len(stock_list)
+    print(f"Found {total_stocks} stocks to train.")
+
+    for i, (stock_key, ticker) in enumerate(stock_list):
+        print(f"\n[{i + 1}/{total_stocks}] Processing {ticker}...")
+
+        etl.train_one_stock_model(connection_pool, stock_key, ticker, df_market)
+
+        import tensorflow.keras.backend as K
+        K.clear_session()
+
+
+def _predict_all_stocks(connection_pool):
+    conn = None
+
+    today = datetime.date.today()
+    prediction_date_key = int(today.strftime('%Y%m%d'))
+
+    try:
+        conn = connection_pool.getconn()
+        with conn.cursor() as cursor:
+            cursor.execute("""SELECT StockKey, TickerSymbol FROM dev.DimStock;""")
+            stock_list = cursor.fetchall()
+
+            cursor.execute("""SELECT DateKey, Oil_Change, USD_Change, VIX_Change, TNX_Change
+                              FROM dev.FactMarketIndicators
+                              ORDER BY DateKey ASC""")
+            market_data = cursor.fetchall()
+            market_columns = ['datekey', 'oil_change', 'usd_change', 'vix_change', 'tnx_change']
+            df_market = pd.DataFrame(market_data, columns=market_columns)
+            df_market['datekey'] = df_market['datekey'].astype(int)
+    except Exception as e:
+        print(f"Error fetching stock list for prediction: {e}")
+        raise
+    finally:
+        if conn:
+            connection_pool.putconn(conn)
+
+    total_stocks = len(stock_list)
+    print(f"Found {total_stocks} stocks to predict.")
+
+    for i, (stock_key, ticker) in enumerate(stock_list):
+        print(f"\n[{i + 1}/{total_stocks}] Predicting for {ticker}...")
+
+        etl.predict_one_stock(connection_pool, stock_key, ticker, df_market, prediction_date_key)
+
+
 def load_daily_data(connection_pool, lookback_days=7):
     print(f"--- Starting Daily Data Update (Lookback: {lookback_days} days) ---")
 
@@ -567,31 +658,7 @@ def load_daily_data(connection_pool, lookback_days=7):
 
     _transform_historical_stock_prices(connection_pool, update=True)
 
-
-def train_all_stocks(connection_pool):
-    conn = None
-    try:
-        conn = connection_pool.getconn()
-        with conn.cursor() as cursor:
-            cursor.execute("""SELECT StockKey, TickerSymbol FROM dev.DimStock;""")
-            stock_list = cursor.fetchall()
-    except Exception as e:
-        print(f"Error fetching stock list for training: {e}")
-        raise
-    finally:
-        if conn:
-            connection_pool.putconn(conn)
-
-    total_stocks = len(stock_list)
-    print(f"Found {total_stocks} stocks to train.")
-
-    for i, (stock_key, ticker) in enumerate(stock_list):
-        print(f"\n[{i + 1}/{total_stocks}] Processing {ticker}...")
-
-        etl.train_one_stock_model(connection_pool, stock_key, ticker)
-
-        import tensorflow.keras.backend as K
-        K.clear_session()
+    _predict_all_stocks(connection_pool)
 
 connection_pool = etl.connect_to_db()
 initialize_database_schema(connection_pool)
@@ -608,4 +675,6 @@ initialize_database_schema(connection_pool)
 
 # load_daily_data(connection_pool)
 # etl.train_one_stock_model(connection_pool, 126, 'NDSN')
-train_all_stocks(connection_pool)
+# train_all_stocks(connection_pool)
+
+load_daily_data(connection_pool)

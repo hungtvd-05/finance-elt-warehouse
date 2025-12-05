@@ -117,3 +117,5 @@ def evaluate_model(model, X_encoder_test, X_decoder_test, y_test, scaler_y):
     # plot_predictions_samples(y_test_original, predictions_original, num_samples=5)
 
     return predictions_original
+
+# def predict_next_days()

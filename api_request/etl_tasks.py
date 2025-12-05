@@ -1,6 +1,7 @@
 import json
 import os
 
+import joblib
 # import matplotlib.pyplot as plt
 
 import pandas as pd
@@ -258,7 +259,7 @@ def process_one_stock_transformation(connection_pool, stock_key, ticker, sector,
         if conn:
             connection_pool.putconn(conn)
 
-def train_one_stock_model(connection_pool, stock_key, ticker):
+def train_one_stock_model(connection_pool, stock_key, ticker, df_market):
     from model import build_hybrid_model, train_model, evaluate_model
 
     conn = None
@@ -270,13 +271,6 @@ def train_one_stock_model(connection_pool, stock_key, ticker):
                               WHERE StockKey = %s""", (stock_key,))
             config = cursor.fetchone()
             print(config)
-
-            cursor.execute("""SELECT DateKey, Oil_Change, USD_Change, VIX_Change, TNX_Change FROM dev.FactMarketIndicators ORDER BY DateKey ASC""")
-            market_data = cursor.fetchall()
-            market_columns = ['datekey', 'oil_change', 'usd_change', 'vix_change', 'tnx_change']
-            df_market = pd.DataFrame(market_data, columns=market_columns)
-
-            df_market['datekey'] = df_market['datekey'].astype(int)
 
         query = """
                 SELECT DateKey, Open, High, Low, Close, Volume, Returns, Volatility, Volume_MA7, RSI, MACD, TechnicalFeatures
@@ -309,6 +303,12 @@ def train_one_stock_model(connection_pool, stock_key, ticker):
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
 
+        scaler_x_path = os.path.join(save_dir, f"{ticker}_scaler_X.pkl")
+        joblib.dump(scaler_X, scaler_x_path)
+
+        scaler_y_path = os.path.join(save_dir, f"{ticker}_scaler_y.pkl")
+        joblib.dump(scaler_y, scaler_y_path)
+
         model_filename = f"{save_dir}/{ticker}_model.keras"
 
         history = train_model(model, X_encoder_train, X_decoder_train, y_train,
@@ -319,6 +319,93 @@ def train_one_stock_model(connection_pool, stock_key, ticker):
 
     except Exception as e:
         print(f"Error fetching model config for {ticker}: {e}")
+        raise
+    finally:
+        if conn:
+            connection_pool.putconn(conn)
+
+
+def predict_one_stock(connection_pool, stock_key, ticker, df_market, prediction_date_key):
+    from tensorflow.keras.models import load_model
+    from model import directional_loss
+
+    conn = None
+    try:
+        conn = connection_pool.getconn()
+        with conn.cursor() as cursor:
+            cursor.execute("""SELECT ActiveFeatures, LookBackWindow, ForecastHorizon
+                              FROM dev.DimStockModelConfig
+                              WHERE StockKey = %s""", (stock_key,))
+            config = cursor.fetchone()
+
+        query = """
+                SELECT * FROM (
+                                  SELECT DateKey, Open, High, Low, Close, Volume, Returns, Volatility, Volume_MA7, RSI, MACD, TechnicalFeatures
+                                  FROM dev.FactStockPrice
+                                  WHERE StockKey = %s
+                                  ORDER BY DateKey DESC
+                                      LIMIT 355
+                              ) AS sub
+                ORDER BY DateKey ASC
+                """
+
+        df = pd.read_sql(query, conn, params=(stock_key,))
+
+        if df.empty:
+            print(f"No stock price data found for ticker {ticker}")
+            return
+
+        features_df = pd.json_normalize(df['technicalfeatures'])
+
+        df_final = pd.concat([df.drop(columns=['technicalfeatures']), features_df], axis=1)
+
+        df_final.columns = df_final.columns.str.lower()
+
+        df_merged = pd.merge(df_final, df_market, on='datekey', how='left')
+
+        model_path = f"saved_models/{ticker}_model.keras"
+        scaler_x_path = f"saved_models/{ticker}_scaler_X.pkl"
+        scaler_y_path = f"saved_models/{ticker}_scaler_y.pkl"
+
+        if not os.path.exists(model_path) or not os.path.exists(scaler_x_path):
+            print(f"Model or Scalers not found for {ticker}")
+            return None
+
+        scaler_X = joblib.load(scaler_x_path)
+        scaler_y = joblib.load(scaler_y_path)
+
+        encoder_input, decoder_input = td.prepare_sequences_predict(df_merged, config, scaler_X, scaler_y)
+
+        if encoder_input is None:
+            print(f"Skipping {ticker}: Failed to prepare sequences.")
+            return None
+
+        model = load_model(model_path, custom_objects={'directional_loss': directional_loss})
+        predictions_scaled = model.predict([encoder_input, decoder_input])
+        predictions_array = scaler_y.inverse_transform(predictions_scaled.reshape(-1, 1)).reshape(-1, config[2])
+
+        print(f"Predictions for {ticker}: {predictions_array}")
+
+        if hasattr(predictions_array, 'tolist'):
+            pred_list = predictions_array.tolist()
+        else:
+            pred_list = predictions_array
+
+        with conn.cursor() as cursor:
+            query = """
+                    INSERT INTO dev.FactStockPrediction
+                        (PredictionDateKey, StockKey, ForecastPrices)
+                    VALUES (%s, %s, %s) ON CONFLICT (PredictionDateKey, StockKey) 
+                        DO \
+                    UPDATE SET
+                        ForecastPrices = EXCLUDED.ForecastPrices, \
+                        CreatedAt = CURRENT_TIMESTAMP;
+                    """
+            cursor.execute(query, (prediction_date_key, stock_key, pred_list))
+            conn.commit()
+
+    except Exception as e:
+        print(f"Error during prediction for {ticker}: {e}")
         raise
     finally:
         if conn:

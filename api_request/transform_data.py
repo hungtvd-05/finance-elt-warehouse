@@ -102,3 +102,39 @@ def prepare_sequences(data, config, train_split=0.9):
     return (X_encoder_train, X_decoder_train, y_train,
             X_encoder_test, X_decoder_test, y_test,
             scaler_X, scaler_y)
+
+
+import numpy as np
+
+
+def prepare_sequences_predict(data, config, scaler_X, scaler_y):
+    active_features, input_timesteps, output_horizon = config
+
+    feature_columns = ['Close'] + active_features
+    feature_columns = list(map(str.lower, feature_columns))
+
+    data_pred = data[feature_columns].copy()
+    data_pred.dropna(inplace=True)
+    data_values = data_pred[feature_columns].values
+
+    if len(data_values) < input_timesteps:
+        print(f"Không đủ dữ liệu. Cần {input_timesteps}, có {len(data_values)}")
+        return None, None
+
+    last_sequence = data_values[-input_timesteps:]
+
+    try:
+        input_scaled = scaler_X.transform(last_sequence)
+    except Exception as e:
+        print(f"Scaler transform error: {e}. Check feature count.")
+        return None, None
+
+    encoder_input = np.expand_dims(input_scaled, axis=0)
+
+    last_close_raw = last_sequence[-1, 0]
+
+    last_close_scaled = scaler_y.transform(np.array([[last_close_raw]]))
+
+    decoder_input = np.tile(last_close_scaled, (1, output_horizon, 1))
+
+    return encoder_input, decoder_input
