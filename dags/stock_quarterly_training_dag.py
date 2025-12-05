@@ -28,7 +28,7 @@ def task_init_schema():
 def task_populate_dim_date():
     pool = etl.connect_to_db()
     try:
-        pipe.populate_dim_date_table(pool)
+        pipe.populate_dim_date(pool)
     finally:
         pool.closeall()
 
