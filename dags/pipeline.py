@@ -5,10 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 
 import api_request as ar
-import transform_data as td
-from psycopg2 import pool, extras
+from psycopg2 import extras
 import datetime
-import numpy as np
 
 def safe_cast_to_int(value):
     try:
@@ -155,6 +153,25 @@ def initialize_database_schema(connection_pool):
                 
                     CONSTRAINT pk_fact_prediction PRIMARY KEY (PredictionDateKey, StockKey)
                 );
+                
+                CREATE TABLE IF NOT EXISTS dev.FactModelPerformance (
+                    PerformanceID SERIAL PRIMARY KEY,
+                    StockKey INT NOT NULL,
+                    
+                    TrainingDateKey INT NOT NULL, 
+                    
+                    MAE FLOAT,
+                    RMSE FLOAT,
+                    MAPE FLOAT,
+                    
+                    LookBackWindow INT,
+                    ForecastHorizon INT,
+                    
+                    CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
+                    FOREIGN KEY (StockKey) REFERENCES dev.DimStock(StockKey),
+                    FOREIGN KEY (TrainingDateKey) REFERENCES dev.DimDate(DateKey)
+                );
 
                 SELECT create_hypertable('staging.RawMarketIndicators', 'rawdate', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
                 SELECT create_hypertable('staging.RawStockPrice', 'rawdate', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
@@ -162,6 +179,7 @@ def initialize_database_schema(connection_pool):
                 SELECT create_hypertable('dev.FactMarketIndicators', 'datekey', if_not_exists => TRUE, chunk_time_interval => 10000);
                 SELECT create_hypertable('dev.FactStockPrice', 'datekey', if_not_exists => TRUE, chunk_time_interval => 10000);
                 SELECT create_hypertable('dev.FactStockPrediction', 'predictiondatekey', if_not_exists => TRUE, chunk_time_interval => 10000);
+                CREATE INDEX idx_perf_stock_date ON dev.FactModelPerformance(StockKey, TrainingDateKey);
                 """
     try:
         conn = connection_pool.getconn()
@@ -324,7 +342,7 @@ def populate_dim_stock(connection_pool, tickers):
         if conn:
             connection_pool.putconn(conn)
 
-def _load_raw_historical_stock_prices(connection_pool, start_date='1990-01-01', retries=3):
+def load_raw_historical_stock_prices(connection_pool, start_date='1990-01-01', retries=3):
     conn = None
     try:
         conn = connection_pool.getconn()
@@ -380,7 +398,7 @@ def _load_raw_historical_stock_prices(connection_pool, start_date='1990-01-01', 
             if conn_worker:
                 connection_pool.putconn(conn_worker)
 
-def _load_raw_historical_market_indicators(connection_pool, start_date='1990-01-01', retries=3):
+def load_raw_historical_market_indicators(connection_pool, start_date='1990-01-01', retries=3):
     stock_keys = ['^VIX', '^TNX', "CL=F", "DX-Y.NYB"]
 
     insert_query = """
@@ -424,7 +442,7 @@ def _load_raw_historical_market_indicators(connection_pool, start_date='1990-01-
             if conn_worker:
                 connection_pool.putconn(conn_worker)
 
-def _transform_historical_market_indicators(connection_pool, update=True):
+def transform_historical_market_indicators(connection_pool, update=True):
     conn = None
     try:
         conn = connection_pool.getconn()
@@ -512,7 +530,7 @@ def _transform_historical_market_indicators(connection_pool, update=True):
             connection_pool.putconn(conn)
 
 
-def _transform_historical_stock_prices(connection_pool, update=True):
+def transform_historical_stock_prices(connection_pool, update=True):
     print("Starting transformation pipeline...")
     conn = None
     try:
@@ -574,6 +592,17 @@ def _transform_historical_stock_prices(connection_pool, update=True):
 
 
 def train_all_stocks(connection_pool):
+    import tensorflow as tf
+
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            print(f"Enabled Memory Growth for {len(gpus)} GPUs")
+        except RuntimeError as e:
+            print(e)
+
     conn = None
     try:
         conn = connection_pool.getconn()
@@ -600,16 +629,20 @@ def train_all_stocks(connection_pool):
     total_stocks = len(stock_list)
     print(f"Found {total_stocks} stocks to train.")
 
+    today = datetime.date.today()
+    training_date_key = int(today.strftime('%Y%m%d'))
+
     for i, (stock_key, ticker) in enumerate(stock_list):
         print(f"\n[{i + 1}/{total_stocks}] Processing {ticker}...")
 
-        etl.train_one_stock_model(connection_pool, stock_key, ticker, df_market)
+        etl.train_one_stock_model(connection_pool, stock_key, ticker, df_market, training_date_key)
 
         import tensorflow.keras.backend as K
+        import gc
         K.clear_session()
+        gc.collect()
 
-
-def _predict_all_stocks(connection_pool):
+def predict_all_stocks(connection_pool):
     conn = None
 
     today = datetime.date.today()
@@ -642,39 +675,3 @@ def _predict_all_stocks(connection_pool):
         print(f"\n[{i + 1}/{total_stocks}] Predicting for {ticker}...")
 
         etl.predict_one_stock(connection_pool, stock_key, ticker, df_market, prediction_date_key)
-
-
-def load_daily_data(connection_pool, lookback_days=7):
-    print(f"--- Starting Daily Data Update (Lookback: {lookback_days} days) ---")
-
-    today = datetime.date.today()
-    start_date = (today - datetime.timedelta(days=lookback_days)).isoformat()
-
-    _load_raw_historical_market_indicators(connection_pool, start_date)
-
-    _load_raw_historical_stock_prices(connection_pool, start_date)
-
-    _transform_historical_market_indicators(connection_pool, update=True)
-
-    _transform_historical_stock_prices(connection_pool, update=True)
-
-    _predict_all_stocks(connection_pool)
-
-connection_pool = etl.connect_to_db()
-initialize_database_schema(connection_pool)
-# populate_dim_date(connection_pool, start_date_str='1990-01-01')
-# tickers = ar.get_all_tickers()
-# _load_raw_historical_stock_prices(connection_pool)
-# _load_raw_historical_market_indicators(connection_pool)
-# populate_dim_stock(connection_pool, tickers)
-
-# load_raw_historical_market_indicators(connection_pool, start_date='1990-01-01')
-
-# _transform_historical_market_indicators(connection_pool, update=False)
-# _transform_historical_stock_prices(connection_pool, update=False)
-
-# load_daily_data(connection_pool)
-# etl.train_one_stock_model(connection_pool, 126, 'NDSN')
-# train_all_stocks(connection_pool)
-
-load_daily_data(connection_pool)

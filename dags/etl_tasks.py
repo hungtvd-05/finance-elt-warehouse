@@ -259,7 +259,7 @@ def process_one_stock_transformation(connection_pool, stock_key, ticker, sector,
         if conn:
             connection_pool.putconn(conn)
 
-def train_one_stock_model(connection_pool, stock_key, ticker, df_market):
+def train_one_stock_model(connection_pool, stock_key, ticker, df_market, training_date_key):
     from model import build_hybrid_model, train_model, evaluate_model
 
     conn = None
@@ -299,23 +299,42 @@ def train_one_stock_model(connection_pool, stock_key, ticker, df_market):
 
         model = build_hybrid_model(len(X_encoder_train[0]), X_encoder_train.shape[2], config[2])
 
-        save_dir = "saved_models"
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        MODEL_DIR = os.path.join(BASE_DIR, "saved_models")
 
-        scaler_x_path = os.path.join(save_dir, f"{ticker}_scaler_X.pkl")
+        if not os.path.exists(MODEL_DIR):
+            os.makedirs(MODEL_DIR)
+
+        scaler_x_path = os.path.join(MODEL_DIR, f"{ticker}_scaler_X.pkl")
         joblib.dump(scaler_X, scaler_x_path)
 
-        scaler_y_path = os.path.join(save_dir, f"{ticker}_scaler_y.pkl")
+        scaler_y_path = os.path.join(MODEL_DIR, f"{ticker}_scaler_y.pkl")
         joblib.dump(scaler_y, scaler_y_path)
 
-        model_filename = f"{save_dir}/{ticker}_model.keras"
+        model_filename = f"{MODEL_DIR}/{ticker}_model.keras"
 
         history = train_model(model, X_encoder_train, X_decoder_train, y_train,
                                  X_encoder_test, X_decoder_test, y_test, model_save_path=model_filename,
                                  epochs=100, batch_size=32)
 
-        predictions = evaluate_model(model, X_encoder_test, X_decoder_test, y_test, scaler_y)
+        predictions, mae, rmse, mape = evaluate_model(model, X_encoder_test, X_decoder_test, y_test, scaler_y)
+
+        with conn.cursor() as cursor:
+            query = """
+                    INSERT INTO dev.FactModelPerformance 
+                    (StockKey, TrainingDateKey, MAE, RMSE, MAPE, LookBackWindow, ForecastHorizon)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s);
+                    """
+            cursor.execute(query, (
+                stock_key,
+                training_date_key,
+                float(mae),
+                float(rmse),
+                float(mape),
+                int(config[1]),
+                int(config[2])
+            ))
+            conn.commit()
 
     except Exception as e:
         print(f"Error fetching model config for {ticker}: {e}")
@@ -363,9 +382,12 @@ def predict_one_stock(connection_pool, stock_key, ticker, df_market, prediction_
 
         df_merged = pd.merge(df_final, df_market, on='datekey', how='left')
 
-        model_path = f"saved_models/{ticker}_model.keras"
-        scaler_x_path = f"saved_models/{ticker}_scaler_X.pkl"
-        scaler_y_path = f"saved_models/{ticker}_scaler_y.pkl"
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        MODEL_DIR = os.path.join(BASE_DIR, "saved_models")
+
+        model_path = os.path.join(MODEL_DIR, f"{ticker}_model.keras")
+        scaler_x_path = os.path.join(MODEL_DIR, f"{ticker}_scaler_X.pkl")
+        scaler_y_path = os.path.join(MODEL_DIR, f"{ticker}_scaler_y.pkl")
 
         if not os.path.exists(model_path) or not os.path.exists(scaler_x_path):
             print(f"Model or Scalers not found for {ticker}")

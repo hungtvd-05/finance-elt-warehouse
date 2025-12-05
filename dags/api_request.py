@@ -1,3 +1,5 @@
+import os
+
 import yfinance as yf
 import pandas as pd
 
@@ -9,7 +11,11 @@ def fetch_data():
     return tickers
 
 def get_all_tickers():
-    df = pd.read_csv('all_stock_name.csv')
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+    csv_path = os.path.join(BASE_DIR, 'all_stock_name.csv')
+
+    df = pd.read_csv(csv_path)
     return df['name'].unique().tolist()
 
 def download_and_format_stock_data(ticker, start_date='1990-01-01', retries=3):
