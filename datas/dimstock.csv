@@ -1,0 +1,23 @@
+stockkey,tickersymbol,companyname,industry,sector,country
+1,NDSN,Nordson Corporation,Specialty Industrial Machinery,Industrials,United States
+2,HON,Honeywell International Inc.,Conglomerates,Industrials,United States
+3,BKR,Baker Hughes Company,Oil & Gas Equipment & Services,Energy,United States
+4,APA,APA Corporation,Oil & Gas E&P,Energy,United States
+5,CSX,CSX Corporation,Railroads,Industrials,United States
+6,JBHT,"J.B. Hunt Transport Services, Inc.",Integrated Freight & Logistics,Industrials,United States
+7,FAST,Fastenal Company,Industrial Distribution,Industrials,United States
+8,FELE,"Franklin Electric Co., Inc.",Specialty Industrial Machinery,Industrials,United States
+9,GT,The Goodyear Tire & Rubber Company,Auto Parts,Consumer Cyclical,United States
+10,FITB,Fifth Third Bancorp,Banks - Regional,Financial Services,United States
+11,NTRS,Northern Trust Corporation,Asset Management,Financial Services,United States
+12,EA,Electronic Arts Inc.,Electronic Gaming & Multimedia,Communication Services,United States
+13,AEP,"American Electric Power Company, Inc.",Utilities - Regulated Electric,Utilities,United States
+14,AMGN,Amgen Inc.,Drug Manufacturers - General,Healthcare,United States
+15,COST,Costco Wholesale Corporation,Discount Stores,Consumer Defensive,United States
+16,ROST,"Ross Stores, Inc.",Apparel Retail,Consumer Cyclical,United States
+17,PEP,"PepsiCo, Inc.",Beverages - Non-Alcoholic,Consumer Defensive,United States
+18,KMB,Kimberly-Clark Corporation,Household & Personal Products,Consumer Defensive,United States
+19,MAT,"Mattel, Inc.",Leisure,Consumer Cyclical,United States
+20,HAS,"Hasbro, Inc.",Leisure,Consumer Cyclical,United States
+21,NWL,Newell Brands Inc.,Household & Personal Products,Consumer Defensive,United States
+22,GIII,"G-III Apparel Group, Ltd.",Apparel Manufacturing,Consumer Cyclical,United States
